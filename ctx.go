@@ -75,6 +75,7 @@ extern int verify_cb(int ok, X509_STORE_CTX* store);
 import "C"
 
 import (
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -157,6 +158,20 @@ func NewCtx() (*Ctx, error) {
 	return c, err
 }
 
+// splitPemChain splits file with multiple certificates in to separate
+// byte slices.
+func splitPemChain(source []byte) (certificates [][]byte) {
+	var newblock *pem.Block
+	for {
+		newblock, source = pem.Decode(source)
+		if newblock == nil {
+			break
+		}
+		certificates = append(certificates, pem.EncodeToMemory(newblock))
+	}
+	return certificates
+}
+
 // NewCtxFromFiles calls NewCtx, loads the provided files, and configures the
 // context to use them.
 func NewCtxFromFiles(cert_file string, key_file string) (*Ctx, error) {
@@ -170,14 +185,28 @@ func NewCtxFromFiles(cert_file string, key_file string) (*Ctx, error) {
 		return nil, err
 	}
 
-	cert, err := LoadCertificateFromPEM(cert_bytes)
-	if err != nil {
-		return nil, err
+	certificates := splitPemChain(cert_bytes)
+	if len(certificates) == 0 {
+		return nil, errors.New("no certificates found")
 	}
 
-	err = ctx.UseCertificate(cert)
-	if err != nil {
-		return nil, err
+	for index, split_cert := range certificates {
+		cert, err := LoadCertificateFromPEM(split_cert)
+		if err != nil {
+			return nil, err
+		}
+
+		if index == 0 {
+			err = ctx.UseCertificate(cert)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			err = ctx.AddChainCertificate(cert)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	key_bytes, err := ioutil.ReadFile(key_file)
